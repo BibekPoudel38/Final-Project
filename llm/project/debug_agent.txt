@@ -1,0 +1,44 @@
+Query: { allInventory { edges { node { id itemName quantity sellingPrice supplier } } } } 
+Query: { salesReport(groupBy: \"product\", userEmail: 'poudelbibek38@gmail.com') { name totalRevenue totalQuantity } }
+Query: { salesReport(groupBy: 'product', userEmail: 'poudelbibek38@gmail.com') { name totalRevenue totalQuantity } }
+Query: { allSales(orderBy: '-revenue', first: 10) { edges { node { revenue quantitySold prodId { itemName } } } } }
+Query: { allSales(orderBy: '-revenue', first: 3) { edges { node { revenue quantitySold prodId { itemName } } } } }
+Query: { salesReport(groupBy: "product", userEmail: 'poudelbibek38@gmail.com') { name totalRevenue totalQuantity } }
+Query: { salesReport(groupBy: "product", userEmail: 'poudelbibek38@gmail.com') { name totalRevenue totalQuantity } }
+Query: { allSales(filters: { userEmail: 'poudelbibek38@gmail.com' }, groupBy: "customer", orderBy: '-totalRevenue') { edges { node { customerName totalRevenue } } } }
+Query: query { allInventory(filters: { userEmail: 'poudelbibek38@gmail.com' }) { edges { node { id itemName quantity sellingPrice supplier } } } }
+Query: query { allInventory(filters: { userEmail: 'poudelbibek38@gmail.com' }) { edges { node { id itemName quantity sellingPrice supplier } } } }
+Query: query { allInventory { edges { node { id itemName quantity sellingPrice supplier } } } }
+Query: { salesReport(groupBy: "date", userEmail: 'poudelbibek38@gmail.com', dateFrom: '2023-11-20', dateTo: '2023-11-26') { date totalRevenue } }
+Query: { allInventory(maxQuantity: 10) { edges { node { id itemName quantity } } } }
+Query: { allInventory(maxQuantity: 10) { edges { node { id itemName quantity } } } }
+Query: { allSales(filters: { productName: 'Coffee Beans' }) { edges { node { revenue } } } }
+Query: { allSuppliers { edges { node { id supplierName contactPerson } } } } 
+Query: { allSales(filters: { dateFrom: '2024-10-01', dateTo: '2024-11-01' }) { edges { node { saleDate revenue } } } }
+Query: { allInventory(filters: { userEmail: 'poudelbibek38@gmail.com' }) { edges { node { id itemName description type quantity sellingPrice supplier } } } }
+Query: { allInventory { edges { node { id itemName quantity sellingPrice supplier } } } } 
+Query: { salesReport(groupBy: "date", dateFrom: '2025-10-01', dateTo: '2025-11-01', userEmail: 'poudelbibek38@gmail.com') { edges { node { date totalRevenue } } }
+Query: { allSales(orderBy: '-sale_date', filters: { productName: 'Coffee Beans' }) { edges { node { saleDate revenue quantitySold } } } }
+Query: { allSales(orderBy: '-sale_date', filters: { productName: 'Coffee Beans' }) { edges { node { saleDate revenue quantitySold } } } }
+Query: { allSales(orderBy: '-sale_date', where:{productName:'Coffee Beans'}) { edges { node { saleDate revenue quantitySold } } } }
+Query: { allSales(orderBy: '-sale_date', where:{productName:'Coffee Beans'}) { edges { node { saleDate revenue quantitySold } } } }
+Query: { allSales(filters: { userEmail: 'poudelbibek38@gmail.com', productName: 'Coffee beans' }) { edges { node { id saleDate revenue quantitySold } } } }
+Query: { allSales(userEmail: 'poudelbibek38@gmail.com', productName: 'Coffee Beans') { edges { node { id saleDate revenue quantitySold } } } }
+Query: { allSales(filters: { userEmail: 'poudelbibek38@gmail.com', productName: 'Coffee Beans' }) { edges { node { id saleDate revenue quantitySold } } } }
+Query: { allSales(filters: { userEmail: 'poudelbibek38@gmail.com', itemName: 'Coffee Beans' }) { edges { node { id saleDate revenue quantitySold } } } }
+Query: { salesReport(groupBy: "date", userEmail: 'poudelbibek38@gmail.com') { date totalRevenue } }
+Query: { allSales(first: 1, filters: { productName: 'Coffee Beans', userEmail: 'poudelbibek38@gmail.com' }) { edges { node { saleDate } } } }
+Query: { allInventory(itemName: 'Coffee Beans', userEmail: 'poudelbibek38@gmail.com') { edges { node { sellingPrice } } } }
+Query: { allInventory(maxPrice: 1000) { edges { node { itemName sellingPrice } } } }
+Query: { allSales { edges { node { saleDate revenue quantitySold } } } }
+Query: { allSales(filters: { productName: 'Coffee Beans', userEmail: 'poudelbibek38@gmail.com' }) { edges { node { id saleDate revenue quantitySold } } } }
+Query: { allSales(filters: { userEmail: 'poudelbibek38@gmail.com' }) { edges { node { revenue } } } }
+Query: { allSales(productName: 'Coffee Beans', userEmail: 'poudelbibek38@gmail.com') { edges { node { id saleDate revenue quantitySold } } } }
+Query: { salesReport(groupBy: "date", userEmail: 'poudelbibek38@gmail.com') { date totalRevenue } }
+Query: { allSales(productName: '...', first: 2) { edges { node { id saleDate revenue quantitySold } } } }
+Query: { allSales(productName: '...', first: 2) { edges { node { id saleDate revenue quantitySold } } } }
+Query: { allSales { edges { node { id saleDate revenue quantitySold } } } }
+Query: query { allSales(productName: 'Coffee', minRevenue: 100, userEmail: 'poudelbibek38@gmail.com') { edges { node { saleDate revenue quantitySold } } } }
+Query: query { salesReport(groupBy: "date", userEmail: 'poudelbibek38@gmail.com') { date totalRevenue } }
+Query: { allSales(productName: 'Tea Bags', userEmail: 'poudelbibek38@gmail.com') { edges { node { id saleDate revenue quantitySold } } } }
+Query: { allInventory(itemName: 'Coffee Beans', userEmail: 'poudelbibek38@gmail.com') { edges { node { id quantity } } } }

@@ -1,0 +1,43 @@
+{
+  "answer": "The weekly sales report sorted by date is as follows:\n\n* November 25, 2024: \n\t+ Revenue: $27.00\n\t+ Revenue: $67.50\n\t+ Revenue: $38.50\n\t+ Revenue: $112.00\n\t+ Revenue: $100.00\n\t+ Revenue: $140.00\n\t+ Revenue: $120.00",
+  "formatted_data": {
+    "data": {
+      "chart_type": "line",
+      "datasets": [
+        {
+          "borderColor": "#4BC0C0",
+          "data": [
+            27.0,
+            67.5,
+            38.5,
+            112.0,
+            100.0,
+            140.0,
+            120.0
+          ],
+          "fill": false,
+          "label": "Revenue"
+        }
+      ],
+      "labels": [
+        "2024-11-25",
+        "2024-11-25",
+        "2024-11-25",
+        "2024-11-25",
+        "2024-11-25",
+        "2024-11-25",
+        "2024-11-25"
+      ]
+    },
+    "display_type": "chart",
+    "metadata": {
+      "title": "Revenue Trend"
+    }
+  },
+  "logs": [
+    "Calling 1 tool(s)",
+    "Query: query { allSales(orderBy: 'sale_date', first: 7) { edges { node { saleDate revenue } } } }...",
+    "Result: {\n  \"data\": {\n    \"allSales\": {\n      \"edges\": [\n        {\n          \"node\": {\n            \"saleDate\": \"2024-11-25\",\n            \"revenue\": \"27.00\"\n          }\n        },\n        {\n          \"node\": {..."
+  ],
+  "status": "success"
+}

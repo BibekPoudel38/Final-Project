@@ -1,0 +1,31 @@
+services:
+  backend:
+    command: python manage.py runserver 0.0.0.0:8000
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=1
+
+  frontend:
+    ports:
+      - "5173:5173"
+
+  prediction:
+    ports:
+      - "8080:8080"
+    environment:
+      - FLASK_DEBUG=1
+
+  llm:
+    build:
+      context: ./llm/project
+      dockerfile: Dockerfile
+    command: python app.py
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_DEBUG=1
+
+  ollama:
+    ports:
+      - "11434:11434"

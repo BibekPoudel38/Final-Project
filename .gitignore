@@ -1,0 +1,43 @@
+# General
+.DS_Store
+Thumbs.db
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+.venv
+*.egg-info/
+
+# Django
+db.sqlite3
+media/
+staticfiles/
+*.pot
+
+# Node/Frontend
+node_modules/
+dist/
+build/
+.npm
+.yarn
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+
+# Project Specific
+model_store/
+prediction_model/env/
+llm/env/
+backend/env/
