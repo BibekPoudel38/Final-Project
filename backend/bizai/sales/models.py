@@ -42,7 +42,14 @@ class TrainingMetrics(models.Model):
     id = models.AutoField(primary_key=True)
     accuracy = models.FloatField()
     loss = models.FloatField()
+    mae = models.FloatField(null=True, blank=True)
+    mse = models.FloatField(null=True, blank=True)
+    rmse = models.FloatField(null=True, blank=True)
+    mape = models.FloatField(null=True, blank=True)
+    r2_score = models.FloatField(null=True, blank=True)
+    explained_variance = models.FloatField(null=True, blank=True)
     model_version = models.CharField(max_length=100)
+    training_info = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

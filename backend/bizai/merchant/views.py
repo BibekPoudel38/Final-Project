@@ -1,6 +1,4 @@
 import json
-import csv
-import io
 from django.db import transaction
 from django.contrib.auth import get_user_model
 from rest_framework.views import APIView
@@ -9,17 +7,18 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from .models import (
-    UserProfileModel,
     BusinessProfileModel,
     SocialMediaProfileModel,
     AddressModel,
 )
 from .serializers import (
-    UserProfileSerializer,
+    UserSerializer,
     BusinessProfileSerializer,
     SocialMediaProfileSerializer,
     AddressSerializer,
 )
+
+User = get_user_model()
 
 
 class OnboardingView(APIView):
@@ -28,34 +27,93 @@ class OnboardingView(APIView):
 
     def get(self, request):
         """
-        Checks if the user has already completed onboarding.
-        Used by the frontend to skip the flow.
+        Checks if the user (owner or employee) is associated with a complete business profile.
+        Returns existing data to pre-fill the form if available.
         """
-        is_complete = BusinessProfileModel.objects.filter(owner=request.user).exists()
+        try:
+            user = request.user
 
-        return Response(
-            {
-                "is_complete": is_complete,
-                "message": (
-                    "Onboarding already completed"
-                    if is_complete
-                    else "User pending onboarding"
-                ),
-            }
-        )
+            # Find business: either owned by user or user is an employee of it
+            business = None
+            if user.business_profile:
+                business = user.business_profile
+            else:
+                business = BusinessProfileModel.objects.filter(
+                    owner=request.user
+                ).first()
+
+            if not business:
+                return Response(
+                    {
+                        "is_complete": False,
+                        "data": None,
+                        "message": "No business profile found.",
+                    }
+                )
+
+            # Check for completeness (Required fields)
+            required_fields = [
+                business.business_name,
+                business.business_email,
+                business.business_phone,
+                business.address,  # Foreign key check
+            ]
+
+            # Check address fields if address exists
+            if business.address:
+                required_fields.extend(
+                    [
+                        business.address.street,
+                        business.address.city,
+                        business.address.state,
+                        business.address.zip_code,
+                        business.address.country,
+                    ]
+                )
+
+            is_complete = (
+                all(bool(f) for f in required_fields) and user.onboarding_complete
+            )
+
+            # Serialize data for pre-filling
+            business_data = BusinessProfileSerializer(business).data
+
+            # Get social profiles
+            social_profiles = SocialMediaProfileModel.objects.filter(bizness=business)
+            social_data = SocialMediaProfileSerializer(social_profiles, many=True).data
+
+            return Response(
+                {
+                    "is_complete": is_complete,
+                    "data": {
+                        "businessProfile": business_data,
+                        "socialProfiles": social_data,
+                        "userProfile": UserSerializer(user).data,
+                    },
+                    "message": "Business profile data retrieved.",
+                }
+            )
+
+        except Exception as e:
+            return Response(
+                {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     def post(self, request):
-
-        # inside post(self, request):
+        print("DEBUG: OnboardingView.post called", flush=True)
         try:
             raw_data = request.data.get("data")
+            print(
+                f"DEBUG: raw_data received: {raw_data[:100] if raw_data else 'None'}",
+                flush=True,
+            )
             if not raw_data:
                 return Response(
                     {"error": "No data provided"}, status=status.HTTP_400_BAD_REQUEST
                 )
 
             payload = json.loads(raw_data)
-            csv_file = request.FILES.get("file")
+            # csv_file = request.FILES.get("file") # Removed as per requirement
         except json.JSONDecodeError:
             return Response(
                 {"error": "Invalid JSON format"}, status=status.HTTP_400_BAD_REQUEST
@@ -66,41 +124,52 @@ class OnboardingView(APIView):
         social_profiles_data = payload.get("socialProfiles", [])
 
         try:
+            print("DEBUG: Starting transaction...", flush=True)
             with transaction.atomic():
-                # User Profile (validate, then create/update)
-                # Use serializer to validate user profile fields (email read-only)
-                user_serializer = UserProfileSerializer(
-                    data=user_profile_data, partial=True
+                # User Profile (validate, then update)
+                user = request.user
+                user_serializer = UserSerializer(
+                    user, data=user_profile_data, partial=True
                 )
                 if not user_serializer.is_valid():
+                    print(
+                        f"DEBUG: User serializer errors: {user_serializer.errors}",
+                        flush=True,
+                    )
                     return Response(
                         {"user_errors": user_serializer.errors},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-                # update_or_create based on auth_id (one profile per user)
-                user_profile, created = UserProfileModel.objects.update_or_create(
-                    auth_id=request.user,
-                    defaults={
-                        "name": user_profile_data.get("name")
-                        or user_profile_data.get("display_name"),
-                        "phone_number": user_profile_data.get("phone_number"),
-                        "user_type": user_profile_data.get("user_type", "owner"),
-                        "email": request.user.email,
-                    },
+                user.name = user_profile_data.get("name") or user_profile_data.get(
+                    "display_name"
                 )
+                user.phone_number = user_profile_data.get("phone_number")
+                user.user_type = user_profile_data.get("user_type", "owner")
+                user.save()
+
+                print("DEBUG: User profile updated", flush=True)
 
                 # Business Profile: validate via serializer and create with context owner
                 business_serializer = BusinessProfileSerializer(
                     data=business_profile_data, context={"owner": request.user}
                 )
                 if not business_serializer.is_valid():
+                    print(
+                        f"DEBUG: Business serializer errors: {business_serializer.errors}",
+                        flush=True,
+                    )
                     return Response(
                         {"business_errors": business_serializer.errors},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
                 business_instance = business_serializer.save()
+                print("DEBUG: Business profile saved", flush=True)
+
+                # Link business to user
+                user.business_profile = business_instance
+                user.save()
 
                 # Social Profiles: validate each and bulk create
                 social_objects = []
@@ -142,15 +211,12 @@ class OnboardingView(APIView):
                     )
                 if social_objects:
                     SocialMediaProfileModel.objects.bulk_create(social_objects)
-
-                # CSV processing (safe, existing helper)
-                if csv_file:
-                    self._process_sales_csv(csv_file, business_instance)
+                print("DEBUG: Social profiles saved", flush=True)
 
                 # Mark onboarding complete on user profile
                 try:
-                    user_profile.onboarding_complete = True
-                    user_profile.save(update_fields=["onboarding_complete"])
+                    user.onboarding_complete = True
+                    user.save(update_fields=["onboarding_complete"])
                 except Exception:
                     # don't break onboarding if this fails, but log
                     pass
@@ -165,38 +231,6 @@ class OnboardingView(APIView):
                 {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-    def _process_sales_csv(self, file_obj, business_instance):
-        """
-        Helper to process the CSV file.
-        Since no Sales Model was provided in the prompt, this is a placeholder
-        wrapper to demonstrate where the logic goes.
-        """
-        try:
-            decoded_file = file_obj.read().decode("utf-8")
-            io_string = io.StringIO(decoded_file)
-            reader = csv.DictReader(io_string)
-
-            sales_records = []
-            for row in reader:
-                # Example logic:
-                # sales_records.append(SalesModel(
-                #     business=business_instance,
-                #     date=row['Date'],
-                #     amount=row['Amount']
-                # ))
-                pass
-
-            # if sales_records:
-            #     SalesModel.objects.bulk_create(sales_records)
-
-            print(
-                f"Processed CSV file: {file_obj.name} for business {business_instance.business_name}"
-            )
-
-        except Exception as e:
-            # We log the error but don't stop the onboarding process for a bad CSV
-            print(f"Error processing CSV: {e}")
-
 
 class ProfileView(APIView):
     permission_classes = [IsAuthenticated]
@@ -206,12 +240,12 @@ class ProfileView(APIView):
         Retrieve user and business profile data.
         """
         try:
-            user_profile = UserProfileModel.objects.get(auth_id=request.user)
+            user = request.user
             business_profile = BusinessProfileModel.objects.filter(
                 owner=request.user
             ).first()
 
-            user_data = UserProfileSerializer(user_profile).data
+            user_data = UserSerializer(user).data
             business_data = (
                 BusinessProfileSerializer(business_profile).data
                 if business_profile
@@ -221,9 +255,9 @@ class ProfileView(APIView):
             return Response(
                 {"user_profile": user_data, "business_profile": business_data}
             )
-        except UserProfileModel.DoesNotExist:
+        except Exception as e:
             return Response(
-                {"error": "User profile not found"}, status=status.HTTP_404_NOT_FOUND
+                {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
     def put(self, request):
@@ -234,7 +268,7 @@ class ProfileView(APIView):
             user_data = request.data.get("user_profile", {})
             business_data = request.data.get("business_profile", {})
 
-            user_profile = UserProfileModel.objects.get(auth_id=request.user)
+            user = request.user
             business_profile = BusinessProfileModel.objects.filter(
                 owner=request.user
             ).first()
@@ -242,9 +276,7 @@ class ProfileView(APIView):
             with transaction.atomic():
                 # Update User Profile
                 if user_data:
-                    user_serializer = UserProfileSerializer(
-                        user_profile, data=user_data, partial=True
-                    )
+                    user_serializer = UserSerializer(user, data=user_data, partial=True)
                     if user_serializer.is_valid():
                         user_serializer.save()
                     else:
@@ -284,10 +316,6 @@ class ProfileView(APIView):
                 {"message": "Profile updated successfully"}, status=status.HTTP_200_OK
             )
 
-        except UserProfileModel.DoesNotExist:
-            return Response(
-                {"error": "User profile not found"}, status=status.HTTP_404_NOT_FOUND
-            )
         except Exception as e:
             return Response(
                 {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -358,15 +386,12 @@ class EmployeeManagementView(APIView):
                 {"error": "Business not found"}, status=status.HTTP_404_NOT_FOUND
             )
 
-        employees = UserProfileModel.objects.filter(
-            business_profile=business, is_employee=True
-        )
-        data = UserProfileSerializer(employees, many=True).data
+        employees = User.objects.filter(business_profile=business, is_employee=True)
+        data = UserSerializer(employees, many=True).data
         return Response(data)
 
     def post(self, request):
         """Create a new employee."""
-        User = get_user_model()
         business = BusinessProfileModel.objects.filter(owner=request.user).first()
         if not business:
             return Response(
@@ -390,15 +415,13 @@ class EmployeeManagementView(APIView):
         try:
             with transaction.atomic():
                 user = User.objects.create_user(email=email, password=password)
-                UserProfileModel.objects.create(
-                    auth_id=user,
-                    name=name,
-                    email=email,
-                    user_type="employee",
-                    is_employee=True,
-                    business_profile=business,
-                    onboarding_complete=True,
-                )
+                user.name = name
+                user.user_type = "employee"
+                user.is_employee = True
+                user.business_profile = business
+                user.onboarding_complete = True
+                user.save()
+
             return Response(
                 {"message": "Employee created successfully"},
                 status=status.HTTP_201_CREATED,
@@ -422,14 +445,11 @@ class EmployeeManagementView(APIView):
             )
 
         try:
-            employee_profile = UserProfileModel.objects.get(
-                id=pk, business_profile=business, is_employee=True
-            )
-            user = employee_profile.auth_id
-            employee_profile.delete()
-            user.delete()  # Delete the auth user too
+            # Check if user is an employee of this business
+            user = User.objects.get(id=pk, business_profile=business, is_employee=True)
+            user.delete()
             return Response({"message": "Employee deleted successfully"})
-        except UserProfileModel.DoesNotExist:
+        except User.DoesNotExist:
             return Response(
                 {"error": "Employee not found"}, status=status.HTTP_404_NOT_FOUND
             )

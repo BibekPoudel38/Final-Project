@@ -42,3 +42,22 @@ Query: query { allSales(productName: 'Coffee', minRevenue: 100, userEmail: 'poud
 Query: query { salesReport(groupBy: "date", userEmail: 'poudelbibek38@gmail.com') { date totalRevenue } }
 Query: { allSales(productName: 'Tea Bags', userEmail: 'poudelbibek38@gmail.com') { edges { node { id saleDate revenue quantitySold } } } }
 Query: { allInventory(itemName: 'Coffee Beans', userEmail: 'poudelbibek38@gmail.com') { edges { node { id quantity } } } }
+Query: { salesReport(groupBy: "date", dateFrom: '2025-10-01', dateTo: '2025-11-01', userEmail: 'poudelbibek38@gmail.com') { date totalRevenue } }
+Query: { allInventory(itemName: 'Coffee Beans') { edges { node { id quantity } } } }
+Query: { allSales(productName: 'Tea Bags', userEmail: 'poudelbibek38@gmail.com') { edges { node { id saleDate revenue quantitySold } } } }
+Query: { allInventory(itemName: 'Coffee Beans', userEmail: 'poudelbibek38@gmail.com') { edges { node { id quantity } } } }
+Query: query { allSales(productName: 'Coffee Beans', saleDateAfter: '2025-11-18', saleDateBefore: '2025-11-25') { edges { node { revenue } } }
+Query: query { allSales(saleDateAfter: '2025-11-18', saleDateBefore: '2025-11-26') { edges { node { product revenue } } }
+Query: query { allSales(productName: 'Sandwich', minRevenue: 0, saleDateAfter: '2025-11-18', saleDateBefore: '2025-11-26') { edges { node { revenue } } }
+Query: query { allSales(productName: 'Sandwich', saleDateAfter: '2025-11-18', saleDateBefore: '2025-11-26') { edges { node { revenueUsd unitsSoldCount } } }
+Query: query { allSales(productName: 'Sandwich', saleDateAfter: '2025-11-18', saleDateBefore: '2025-11-26') { edges { node { revenueUsd unitsSoldCount } } }
+Query: query { allSales(productName: 'Croissant', saleDateAfter: '2025-11-18', saleDateBefore: '2025-11-25') { edges { node { id saleDate revenue quantitySold } } } }
+Query: query { allSales(productName: 'Croissant', saleDateAfter: '2025-11-18', saleDateBefore: '2025-11-25') { edges { node { id saleDate revenue quantitySold } } } }
+Query: query { allSales(productName: '...', minRevenue: 100, userEmail: 'poudelbibek38@gmail.com') { edges { node { saleDate revenue quantitySold } } } }
+Query: query { allSales(productName: '...', minRevenue: 0, userEmail: 'poudelbibek38@gmail.com', dateFrom: '2023-09-01', dateTo: '2023-10-31') { edges { node { saleDate revenue quantitySold } } } }
+Query: query { allSuppliers { edges { node { id supplierName contactPerson } } } }
+Query: query { allInventory(itemName: 'widget') { edges { node { id itemName quantity } } } }
+Query: query { salesReport(groupBy: "date", dateFrom: '2023-11-01', dateTo: '2023-12-01', userEmail: 'poudelbibek38@gmail.com') { date totalRevenue } }
+Query: query { allInventory(maxQuantity: 10) { edges { node { id itemName quantity } } } }
+Query: query { allSales(productName: 'Tea Bags', userEmail: 'poudelbibek38@gmail.com') { edges { node { id saleDate revenue quantitySold } } }
+Query: query { allInventory(itemName: 'Coffee Beans') { edges { node { id quantity } } } }

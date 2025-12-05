@@ -39,6 +39,20 @@ class User(AbstractBaseUser):
     created_at = models.DateTimeField(verbose_name="Created at", auto_now_add=True)
     updated_at = models.DateTimeField(verbose_name="Updated at", auto_now=True)
     objects = MyUserManager()
+    # Profile fields moved from UserProfileModel
+    name = models.CharField(max_length=100, blank=True, null=True)
+    phone_number = models.CharField(max_length=15, blank=True, null=True)
+    user_type = models.CharField(max_length=50, default="owner")
+    onboarding_complete = models.BooleanField(default=False)
+    is_employee = models.BooleanField(default=False)
+    business_profile = models.ForeignKey(
+        "merchant.BusinessProfileModel",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="employees",
+    )
+
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = []
 

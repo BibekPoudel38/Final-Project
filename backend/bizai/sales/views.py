@@ -27,7 +27,11 @@ class SalesListView(APIView):
         weather = request.GET.get("weather", "")
 
         # Base queryset
-        queryset = SalesModel.objects.filter(is_active=True)
+        queryset = (
+            SalesModel.objects.filter(is_active=True)
+            .select_related("prod_id")
+            .prefetch_related("holidays")
+        )
 
         # Apply filters
         if search:
@@ -187,7 +191,7 @@ class TrainModelView(APIView):
 
             for url in urls_to_try:
                 try:
-                    response = requests.post(url, json=payload, timeout=60)
+                    response = requests.post(url, json=payload, timeout=300)
                     break
                 except requests.exceptions.ConnectionError as e:
                     last_error = e
@@ -213,7 +217,14 @@ class TrainModelView(APIView):
                     TrainingMetrics.objects.create(
                         accuracy=metrics.get("accuracy", 0.0),
                         loss=metrics.get("loss", 0.0),
+                        mae=metrics.get("mae"),
+                        mse=metrics.get("mse"),
+                        rmse=metrics.get("rmse"),
+                        mape=metrics.get("mape"),
+                        r2_score=metrics.get("r2_score"),
+                        explained_variance=metrics.get("explained_variance"),
                         model_version=metrics.get("model_version", "unknown"),
+                        training_info=data.get("training_info"),
                     )
 
                 return Response(
@@ -251,16 +262,30 @@ class TrainingMetricsView(APIView):
                 {
                     "accuracy": latest.accuracy,
                     "loss": latest.loss,
+                    "mae": latest.mae,
+                    "mse": latest.mse,
+                    "rmse": latest.rmse,
+                    "mape": latest.mape,
+                    "r2_score": latest.r2_score,
+                    "explained_variance": latest.explained_variance,
                     "model_version": latest.model_version,
                     "last_trained": latest.created_at,
+                    "training_info": latest.training_info,
                 }
             )
         return Response(
             {
                 "accuracy": 0.0,
                 "loss": 0.0,
+                "mae": 0.0,
+                "mse": 0.0,
+                "rmse": 0.0,
+                "mape": 0.0,
+                "r2_score": 0.0,
+                "explained_variance": 0.0,
                 "model_version": "None",
                 "last_trained": None,
+                "training_info": None,
             }
         )
 
@@ -316,3 +341,103 @@ class ScenarioPredictionView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=500)
+
+
+class SalesAIChatView(APIView):
+    """
+    Handle natural language queries about sales data by proxying to the LLM service with context.
+    """
+
+    def post(self, request):
+        query = request.data.get("query", "")
+        if not query:
+            return Response({"message": "Query is required"}, status=400)
+
+        try:
+            # 1. Gather Context
+            # Global Stats
+            total_revenue = (
+                SalesModel.objects.aggregate(Sum("revenue"))["revenue__sum"] or 0
+            )
+            total_sales_count = SalesModel.objects.count()
+
+            # Top Product
+            top_product_data = (
+                SalesModel.objects.values("prod_id__item_name")
+                .annotate(total_sold=Sum("quantity_sold"))
+                .order_by("-total_sold")
+                .first()
+            )
+            top_product = (
+                top_product_data["prod_id__item_name"] if top_product_data else "N/A"
+            )
+
+            # Recent Transactions (Last 5)
+            recent_sales = (
+                SalesModel.objects.filter(is_active=True)
+                .select_related("prod_id")
+                .order_by("-sale_date")[:5]
+            )
+            recent_sales_list = []
+            for s in recent_sales:
+                recent_sales_list.append(
+                    {
+                        "date": s.sale_date.strftime("%Y-%m-%d"),
+                        "product_name": s.prod_id.item_name,
+                        "revenue_usd": float(s.revenue),
+                        "units_sold_count": float(s.quantity_sold),
+                    }
+                )
+
+            context = {
+                "total_revenue_usd": float(total_revenue),
+                "total_transactions_count": total_sales_count,
+                "top_selling_product": top_product,
+                "recent_sales_transactions": recent_sales_list,
+            }
+
+            # 2. Construct Prompt
+            system_prompt = f"""
+            You are a helpful AI assistant for a business owner. 
+            Here is the current sales data context:
+            {json.dumps(context, indent=2)}
+            
+            Data Dictionary:
+            - revenue_usd: The total money earned in USD.
+            - units_sold_count: The number of individual items sold.
+            
+            Answer the user's question based strictly on this data. Do not confuse revenue with units sold.
+            Be concise and professional.
+            """
+
+            combined_query = f"{system_prompt}\n\nUser Question: {query}"
+
+            payload = {"query": combined_query, "session_id": "sales_assistant_proxy"}
+
+            # 3. Call LLM Service
+            urls_to_try = [
+                "http://final_project_llm:5000/chat",
+                "http://llm:5000/chat",
+                "http://localhost:5000/chat",
+                "http://host.docker.internal:5000/chat",
+            ]
+
+            response_data = {
+                "answer": "AI Service Unavailable. Please check if the LLM service is running."
+            }
+
+            for url in urls_to_try:
+                try:
+                    resp = requests.post(url, json=payload, timeout=30)
+                    if resp.status_code == 200:
+                        response_data = resp.json()
+                        break
+                except:
+                    continue
+
+            return Response(response_data)
+
+        except Exception as e:
+            return Response(
+                {"message": f"Error processing AI request: {str(e)}"}, status=500
+            )

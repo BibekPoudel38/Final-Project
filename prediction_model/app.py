@@ -38,7 +38,7 @@ CONFIG = {
     "d_ff": 256,
     "dropout": 0.2,
     "forecast_horizon": 7,
-    "context_window": 32,
+    "context_window": 60,
     "min_samples_for_dl": 40,
     "num_targets": 2,  # Targets: [Sales_Amount, Sales_Quantity]
 }
@@ -199,7 +199,7 @@ class SalesPredictor:
         self.business_id = business_id
         self.model_type = "naive"
         self.model = None
-        self.scaler = StandardScaler()
+        # self.scaler = StandardScaler() # Removed Global Scaler
         self.label_encoders = {}
         self.last_context = None
         self.item_ids = []
@@ -278,7 +278,7 @@ class SalesPredictor:
                         "qty_avg": item_df["sales_quantity"].tail(7).mean(),
                     }
         else:
-            print(f"[{self.business_id}] Training Multivariate PatchTST.")
+            print(f"[{self.business_id}] Training Multivariate PatchTST with RevIN.")
             self.model_type = "patchtst"
             self._train_patchtst(df)
 
@@ -320,21 +320,13 @@ class SalesPredictor:
             self.model_type = "naive"
             return
 
-        X_arr = np.array(X_list)
-        Y_arr = np.array(Y_list)
+        X_arr = np.array(X_list, dtype=np.float32)
+        Y_arr = np.array(Y_list, dtype=np.float32)
 
-        # Scaling Features
-        B, Seq, F = X_arr.shape
-        X_flat = X_arr.reshape(-1, F)
-        X_scaled = self.scaler.fit_transform(X_flat).reshape(B, Seq, F)
+        # NO GLOBAL SCALING - RevIN handles it per instance
 
-        # Scaling Targets
-        mean_y = self.scaler.mean_[0 : self.num_targets]
-        scale_y = self.scaler.scale_[0 : self.num_targets]
-        Y_scaled = (Y_arr - mean_y) / scale_y
-
-        X_tensor = torch.FloatTensor(X_scaled)
-        Y_tensor = torch.FloatTensor(Y_scaled)
+        X_tensor = torch.FloatTensor(X_arr)
+        Y_tensor = torch.FloatTensor(Y_arr)
 
         self.model = PatchTST(CONFIG, num_features=self.num_features)
         optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
@@ -344,11 +336,34 @@ class SalesPredictor:
         dataset = torch.utils.data.TensorDataset(X_tensor, Y_tensor)
         loader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=True)
 
-        for epoch in range(15):
+        for epoch in range(30):
             for bx, by in loader:
                 optimizer.zero_grad()
-                out = self.model(bx)
-                loss = criterion(out, by)
+
+                # --- RevIN Logic (Instance Normalization) ---
+                # 1. Calculate Mean/Std for the TARGET columns in the INPUT window
+                # We only normalize the targets because we want to predict them relative to the window
+                # bx shape: [Batch, Window, Features]
+                # Targets are at indices 0 and 1
+
+                target_bx = bx[:, :, 0 : self.num_targets]  # [B, L, 2]
+                mean = torch.mean(target_bx, dim=1, keepdim=True)  # [B, 1, 2]
+                std = torch.std(target_bx, dim=1, keepdim=True) + 1e-5  # [B, 1, 2]
+
+                # Normalize Input Targets
+                bx_norm = bx.clone()
+                bx_norm[:, :, 0 : self.num_targets] = (target_bx - mean) / std
+
+                # Normalize Output Targets (Labels)
+                # by shape: [Batch, Horizon, 2]
+                by_norm = (by - mean) / std  # Broadcast mean/std from input window
+
+                # Forward
+                out = self.model(bx_norm)
+
+                # Loss on Normalized Data
+                loss = criterion(out, by_norm)
+
                 loss.backward()
                 optimizer.step()
         self.model.eval()
@@ -394,28 +409,38 @@ class SalesPredictor:
                         ctx = np.vstack([pad, ctx])
                 running_contexts[item] = ctx
 
-            mean_y = self.scaler.mean_[0 : self.num_targets]
-            scale_y = self.scaler.scale_[0 : self.num_targets]
-
             # AUTO-REGRESSIVE LOOP
             for i in range(len(future_feats)):
                 input_batch = []
                 for item in req_item_ids:
                     input_batch.append(running_contexts[item])
 
-                input_arr = np.array(input_batch)
-                B_size, L_size, F_size = input_arr.shape
-                input_flat = input_arr.reshape(-1, F_size)
-                input_scaled = self.scaler.transform(input_flat).reshape(
-                    B_size, L_size, F_size
-                )
-                input_tensor = torch.FloatTensor(input_scaled)
+                input_arr = np.array(input_batch, dtype=np.float32)
+                input_tensor = torch.FloatTensor(input_arr)  # [B, L, F]
+
+                # --- RevIN Logic for Prediction ---
+                # 1. Calc Stats
+                target_input = input_tensor[:, :, 0 : self.num_targets]
+                mean = torch.mean(target_input, dim=1, keepdim=True)
+                std = torch.std(target_input, dim=1, keepdim=True) + 1e-5
+
+                # 2. Normalize Input
+                input_norm = input_tensor.clone()
+                input_norm[:, :, 0 : self.num_targets] = (target_input - mean) / std
 
                 with torch.no_grad():
-                    forecast_scaled = self.model(input_tensor)
+                    forecast_norm = self.model(input_norm)  # [B, Horizon, 2]
 
-                next_step_scaled = forecast_scaled[:, 0, :].numpy()
-                next_vals = (next_step_scaled * scale_y) + mean_y
+                # 3. Denormalize Output (Inverse RevIN)
+                # We only need the first step of the horizon for autoregression
+                next_step_norm = forecast_norm[:, 0, :]  # [B, 2]
+
+                # Reshape mean/std for broadcasting: [B, 1, 2] -> [B, 2]
+                mean_sq = mean.squeeze(1)
+                std_sq = std.squeeze(1)
+
+                next_vals = (next_step_norm * std_sq) + mean_sq
+                next_vals = next_vals.numpy()
 
                 current_future_feats = future_feats[i]
 
@@ -485,6 +510,42 @@ class SalesPredictor:
 # ==========================================
 # 5. API ENDPOINTS (With Swagger Docs)
 # ==========================================
+
+
+def calculate_metrics(y_true, y_pred):
+    from sklearn.metrics import (
+        mean_absolute_error,
+        mean_squared_error,
+        r2_score,
+        explained_variance_score,
+    )
+
+    # Flatten
+    y_true = np.array(y_true).flatten()
+    y_pred = np.array(y_pred).flatten()
+
+    mae = mean_absolute_error(y_true, y_pred)
+    mse = mean_squared_error(y_true, y_pred)
+    rmse = np.sqrt(mse)
+
+    # MAPE handling zeros
+    mask = y_true != 0
+    if np.any(mask):
+        mape = np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
+    else:
+        mape = 0.0
+
+    r2 = r2_score(y_true, y_pred)
+    explained_var = explained_variance_score(y_true, y_pred)
+
+    return {
+        "mae": float(mae),
+        "mse": float(mse),
+        "rmse": float(rmse),
+        "mape": float(mape),
+        "r2_score": float(r2),
+        "explained_variance": float(explained_var),
+    }
 
 
 @app.route("/retrain", methods=["POST"])
@@ -564,6 +625,10 @@ def retrain():
               type: string
             model_type:
               type: string
+            metrics:
+              type: object
+            training_info:
+              type: object
       400:
         description: Validation error
     """
@@ -582,25 +647,116 @@ def retrain():
         if os.path.exists(pth_path):
             os.remove(pth_path)
 
-        # Train
-        predictor = SalesPredictor(business_id)
-        predictor.train(raw_data)
-        predictor.save()
+        # Prepare Data
+        df = pd.DataFrame(raw_data)
+        if "date" not in df.columns:
+            df["date"] = pd.date_range(
+                end=pd.Timestamp.now(), periods=len(df), freq="D"
+            )
+        else:
+            df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date")
 
-        # Calculate simple metrics (simulated for now as we don't have a separate test set in this flow)
-        # In a real scenario, we would split data and evaluate.
-        # Here we will return the last loss from training if available, or a simulated accuracy.
-        metrics = {
-            "accuracy": 0.85 + (np.random.random() * 0.1),  # Simulated 85-95% accuracy
-            "loss": 0.15 - (np.random.random() * 0.05),  # Simulated loss
-            "model_version": f"PatchTST-v2.{datetime.now().strftime('%Y%m%d%H%M')}",
-        }
+        # 80/20 Split for Validation
+        n_total = len(df)
+        split_idx = int(n_total * 0.8)
+
+        # Ensure we have enough data for a meaningful split
+        if split_idx > CONFIG["context_window"] and (n_total - split_idx) > 1:
+            train_df = df.iloc[:split_idx].copy()
+            test_df = df.iloc[split_idx:].copy()
+
+            # 1. Train Validation Model
+            val_predictor = SalesPredictor(business_id + "_val")
+            val_predictor.train(train_df.to_dict(orient="records"))
+
+            # 2. Predict on Test Set
+            test_dates = test_df["date"].dt.strftime("%Y-%m-%d").unique().tolist()
+            test_items = test_df["product_id"].unique().tolist()
+
+            future_entries = [{"date": d} for d in test_dates]
+            forecast = val_predictor.predict_step_by_step(future_entries, test_items)
+
+            # 3. Calculate Metrics
+            y_true_amt = []
+            y_pred_amt = []
+
+            # Align predictions with actuals
+            for i, date_str in enumerate(test_dates):
+                date_obj = pd.to_datetime(date_str)
+                for item in test_items:
+                    actual_row = test_df[
+                        (test_df["date"] == date_obj) & (test_df["product_id"] == item)
+                    ]
+                    if not actual_row.empty:
+                        actual_amt = actual_row.iloc[0]["sales_amount"]
+                        pred_amt = forecast[item][i]["sales_amount"]
+
+                        y_true_amt.append(actual_amt)
+                        y_pred_amt.append(pred_amt)
+
+            if y_true_amt:
+                metrics = calculate_metrics(y_true_amt, y_pred_amt)
+                metrics["accuracy"] = metrics["r2_score"]
+            else:
+                metrics = {
+                    k: 0.0
+                    for k in [
+                        "mae",
+                        "mse",
+                        "rmse",
+                        "mape",
+                        "r2_score",
+                        "explained_variance",
+                        "accuracy",
+                    ]
+                }
+
+            training_info = {
+                "train_start": train_df["date"].min().strftime("%Y-%m-%d"),
+                "train_end": train_df["date"].max().strftime("%Y-%m-%d"),
+                "test_start": test_df["date"].min().strftime("%Y-%m-%d"),
+                "test_end": test_df["date"].max().strftime("%Y-%m-%d"),
+                "split_ratio": "80/20",
+            }
+
+        else:
+            # Fallback for small data: Train on all, no validation metrics
+            metrics = {
+                k: 0.0
+                for k in [
+                    "mae",
+                    "mse",
+                    "rmse",
+                    "mape",
+                    "r2_score",
+                    "explained_variance",
+                    "accuracy",
+                ]
+            }
+            training_info = {
+                "train_start": df["date"].min().strftime("%Y-%m-%d"),
+                "train_end": df["date"].max().strftime("%Y-%m-%d"),
+                "test_start": "N/A",
+                "test_end": "N/A",
+                "split_ratio": "100/0 (Insufficient Data)",
+            }
+
+        # 4. Final Training on Full Dataset
+        final_predictor = SalesPredictor(business_id)
+        final_predictor.train(raw_data)
+        final_predictor.save()
+
+        metrics["model_version"] = (
+            f"PatchTST-v2.{datetime.now().strftime('%Y%m%d%H%M')}"
+        )
 
         return jsonify(
             {
                 "status": "success",
-                "model_type": predictor.model_type,
+                "model_type": final_predictor.model_type,
                 "metrics": metrics,
+                "training_info": training_info,
             }
         )
     except Exception as e:

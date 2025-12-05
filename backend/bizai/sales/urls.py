@@ -5,6 +5,7 @@ from .views import (
     TrainModelView,
     TrainingMetricsView,
     ScenarioPredictionView,
+    SalesAIChatView,
 )
 
 urlpatterns = [
@@ -13,4 +14,5 @@ urlpatterns = [
     path("train/", TrainModelView.as_view(), name="sales-train"),
     path("metrics/", TrainingMetricsView.as_view(), name="sales-metrics"),
     path("scenario/", ScenarioPredictionView.as_view(), name="sales-scenario"),
+    path("ai_chat/", SalesAIChatView.as_view(), name="sales-ai-chat"),
 ]
