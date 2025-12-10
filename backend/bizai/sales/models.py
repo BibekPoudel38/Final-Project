@@ -38,8 +38,14 @@ class SalesModel(models.Model):
         return f"Sales {self.sales_uid} - Product {self.prod_id}"
 
 
+from django.conf import settings
+
+
 class TrainingMetrics(models.Model):
     id = models.AutoField(primary_key=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True
+    )  # Link to User
     accuracy = models.FloatField()
     loss = models.FloatField()
     mae = models.FloatField(null=True, blank=True)

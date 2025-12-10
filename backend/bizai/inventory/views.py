@@ -111,7 +111,14 @@ class InventoryCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        data = dict(request.data)
+        print(f"DEBUG CREATE DATA RAW: {request.data}")
+        print(f"DEBUG CREATE DATA TYPE: {type(request.data)}")
+        # Handle QueryDict (multipart) vs standard dict (json)
+        if hasattr(request.data, "dict"):
+            data = request.data.dict()
+        else:
+            data = request.data
+        print(f"DEBUG CREATE DATA PROCESSED: {data}")
         serializer = InventorySerializer(data=data)
         if serializer.is_valid():
             instance = serializer.save(user=request.user, business=business)
@@ -267,6 +274,31 @@ class InventoryDetailView(RetrieveUpdateDestroyAPIView):
             dj_models.Q(user=self.request.user)
             | dj_models.Q(business__owner=self.request.user)
         )
+
+
+class InventoryUpdateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            item = InventorModel.objects.get(
+                dj_models.Q(id=pk)
+                & (
+                    dj_models.Q(user=request.user)
+                    | dj_models.Q(business__owner=request.user)
+                )
+            )
+        except InventorModel.DoesNotExist:
+            return Response(
+                {"error": "Item not found or access denied"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = InventorySerializer(item, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class InventoryItemAnalyticsView(APIView):

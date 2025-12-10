@@ -24,17 +24,24 @@ class Query(graphene.ObjectType):
         user_email=graphene.String(),
     )
 
+    def resolve_all_sales(self, info, **kwargs):
+        if not info.context.user.is_authenticated:
+            return SalesModel.objects.none()
+        return SalesModel.objects.filter(
+            prod_id__user=info.context.user, is_active=True
+        )
+
     def resolve_sales_report(
         self, info, group_by, date_from=None, date_to=None, user_email=None
     ):
-        queryset = SalesModel.objects.filter(is_active=True)
+        # Enforce authentication
+        if not info.context.user.is_authenticated:
+            return []
 
-        if user_email:
-            queryset = queryset.filter(
-                Q(prod_id__user__email__iexact=user_email)
-                | Q(prod_id__business__business_email__iexact=user_email)
-                | Q(prod_id__business__owner__email__iexact=user_email)
-            )
+        # Filter by the logged-in user, ignoring the user_email argument if passed
+        queryset = SalesModel.objects.filter(
+            prod_id__user=info.context.user, is_active=True
+        )
 
         if date_from:
             queryset = queryset.filter(sale_date__gte=date_from)

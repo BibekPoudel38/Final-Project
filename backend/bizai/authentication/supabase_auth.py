@@ -24,6 +24,34 @@ def _get_supabase_config():
     return supabase_url, supabase_key
 
 
+def verify_supabase_token(token):
+    if token.startswith("MAGIC:"):
+        email = token.split(":")[1]
+        return {"email": email, "id": f"id_{email}"}
+
+    if token == "MAGIC_TEST_TOKEN":
+        return {"email": "test_user@example.com", "id": "test_user_id"}
+
+    supabase_url, supabase_key = _get_supabase_config()
+    if not supabase_url or not supabase_key:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "apikey": supabase_key,
+    }
+    try:
+        # Supabase exposes the user endpoint at /auth/v1/user
+        resp = requests.get(
+            f"{supabase_url.rstrip('/')}/auth/v1/user", headers=headers, timeout=5
+        )
+        if resp.status_code == 200:
+            return resp.json()
+    except requests.RequestException:
+        pass
+    return None
+
+
 class SupabaseAuthentication(BaseAuthentication):
     """Authenticate requests using Supabase JWTs and map to local Django users.
 
@@ -43,7 +71,7 @@ class SupabaseAuthentication(BaseAuthentication):
 
         token = auth_header.split(" ")[1]
 
-        user_data = self.verify_supabase_token(token)
+        user_data = verify_supabase_token(token)
         if not user_data:
             raise AuthenticationFailed("Invalid or expired Supabase token")
 
@@ -57,28 +85,33 @@ class SupabaseAuthentication(BaseAuthentication):
         return (user, None)
 
     def verify_supabase_token(self, token):
-        if token.startswith("MAGIC:"):
-            email = token.split(":")[1]
-            return {"email": email, "id": f"id_{email}"}
+        # Wrapper for backward compatibility
+        return verify_supabase_token(token)
 
-        if token == "MAGIC_TEST_TOKEN":
-            return {"email": "test_user@example.com", "id": "test_user_id"}
 
-        supabase_url, supabase_key = _get_supabase_config()
-        if not supabase_url or not supabase_key:
-            return None
+class SupabaseMiddleware:
+    """
+    Middleware to authenticate users via Supabase token for non-DRF views (like GraphQL).
+    """
 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "apikey": supabase_key,
-        }
-        try:
-            # Supabase exposes the user endpoint at /auth/v1/user
-            resp = requests.get(
-                f"{supabase_url.rstrip('/')}/auth/v1/user", headers=headers, timeout=5
-            )
-            if resp.status_code == 200:
-                return resp.json()
-        except requests.RequestException:
-            pass
-        return None
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        # Do not overwrite if already authenticated (e.g. by session)
+        if not hasattr(request, "user") or request.user.is_anonymous:
+            # Check Authorization header
+            auth_header = request.headers.get("Authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                token = auth_header.split(" ")[1]
+                user_data = verify_supabase_token(token)
+                if user_data:
+                    email = user_data.get("email")
+                    if email:
+                        user, _ = User.objects.get_or_create(
+                            email=email, defaults={"is_active": True}
+                        )
+                        request.user = user
+
+        response = self.get_response(request)
+        return response

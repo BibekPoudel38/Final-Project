@@ -1,17 +1,18 @@
-"""
-GraphQL Agent with Django Filter Support and Response Formatting
-"""
-
 import json
 import requests
 import re
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
+import contextvars
 from langchain_ollama import ChatOllama
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, ToolMessage, SystemMessage, AIMessage
 from formatter import ResponseFormatter
 import config
+
+
+# Context storage for the auth token
+request_token = contextvars.ContextVar("request_token", default=None)
 
 
 def execute_graphql(query: str, variables: Optional[Dict] = None) -> Dict[str, Any]:
@@ -21,10 +22,15 @@ def execute_graphql(query: str, variables: Optional[Dict] = None) -> Dict[str, A
         if query:
             query = query.replace("'", '"')
 
+        headers = {"Content-Type": "application/json"}
+        token = request_token.get()
+        if token:
+            headers["Authorization"] = token
+
         response = requests.post(
             config.GRAPHQL_ENDPOINT,
             json={"query": query, "variables": variables},
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             timeout=30,
         )
 
@@ -138,7 +144,7 @@ def sales_query(query: str) -> str:
     - weatherCondition: 'text'
     - minQuantity, maxQuantity: number
     - minRevenue, maxRevenue: number
-    - saleDateAfter, saleDateBefore: 'YYYY-MM-DD'
+    - saleDateAfter, saleDateBefore: 'YYYY-MM-DD' (STRICT ISO FORMAT REQUIRED)
     - wasOnSale: true/false
     - userEmail: 'email' - CRITICAL: Always use this to filter by current user
     - orderBy: 'sale_date', '-revenue', etc
@@ -148,11 +154,11 @@ def sales_query(query: str) -> str:
     1. SALES OVERVIEW:
        query { allSales(first: 50) { edges { node { id saleDate revenue quantitySold } } } }
 
-    2. REVENUE TRENDS (Aggregated):
-       query { salesReport(groupBy: "date", userEmail: '...') { date totalRevenue } }
+    2. REVENUE TRENDS (Aggregated) - USE STRICT DATES:
+       query { salesReport(groupBy: "date", dateFrom: "2025-01-01", dateTo: "2025-12-31", userEmail: '...') { date totalRevenue } }
 
     3. TOP SELLING PRODUCTS (Aggregated):
-       query { salesReport(groupBy: "product", userEmail: '...') { name totalRevenue totalQuantity } }
+       query { salesReport(groupBy: "product", dateFrom: "2025-01-01", dateTo: "2025-12-31", userEmail: '...') { name totalRevenue totalQuantity } }
 
     4. FILTER BY DATE & WEATHER:
        query { allSales(saleDateAfter: '2023-01-01', weatherCondition: 'Sunny') { edges { node { saleDate revenue } } } }
@@ -279,6 +285,18 @@ class GraphQLAgent:
         self.llm_with_tools = self.llm.bind_tools(self.tools)
         self.conversation_history = {}
 
+    def clear_history(self, session_id: str):
+        """Clear the history for a given session."""
+        if session_id in self.conversation_history:
+            del self.conversation_history[session_id]
+
+        # Also clear from DB if needed
+        try:
+            url = f"{config.DJANGO_API_URL}chat/history/{session_id}/"
+            requests.delete(url, timeout=5)
+        except Exception as e:
+            print(f"Error clearing DB history: {e}")
+
     def _fetch_history_from_db(self, session_id: str):
         """Fetch chat history from Django API."""
         try:
@@ -316,33 +334,24 @@ class GraphQLAgent:
             content=(
                 f"Current Date: {current_date}. "
                 "You are BizAI, a smart business assistant. "
-                "You can answer general questions, draft emails, and explain concepts directly WITHOUT using tools. "
-                "ONLY use tools when you need to fetch REAL-TIME data from the database (inventory, sales, suppliers). "
+                "You answer questions based on real-time business data. "
                 f"{user_email_instruction}"
                 "\n\nTOOLS AVAILABLE:"
                 "\n- 'graphql_query': For inventory and suppliers."
                 "\n- 'sales_query': For sales, revenue, and transaction reports."
                 "\n- 'predict_sales': For future sales forecasting."
                 "\n- 'train_model': To retrain the AI model."
-                "\n\nGUIDELINES:"
-                "\n1. If the user asks a general question (e.g. 'Draft an email', 'What is ROI?'), ANSWER DIRECTLY."
-                "\n2. If the user asks for data (e.g. 'Show me sales'), USE A TOOL."
-                "\n3. If a tool fails, APOLOGIZE and explain simply. DO NOT show raw error logs."
-                "\n4. CRITICAL: Always use SINGLE QUOTES for strings inside GraphQL queries."
-                "\n5. CRITICAL: DO NOT use 'where' clause in GraphQL. Filter directly on arguments (e.g. itemName: 'Coffee')."
-                "\n6. CRITICAL: For 'sales_query', use 'productName' argument. For 'graphql_query' (inventory), use 'itemName'."
-                "\n7. CRITICAL: DO NOT output raw JSON or tool calls in your final answer. Just say 'I am checking...' or give the result."
-                "\n8. CRITICAL: DO NOT narrate your actions (e.g. 'I will use the tool...'). JUST USE IT."
-                "\n9. CRITICAL: DO NOT explain the JSON structure, data types, or how to parse it. DO NOT write code to explain the data. Just summarize the *business insights* (e.g. 'Total revenue is $500')."
-                "\n\nSTYLE GUIDELINES:"
-                "\n- Use relevant EMOJIS (e.g. 📈 for trends, 📦 for items, 💰 for revenue, ✅ for success)."
-                "\n- Be FRIENDLY, PROFESSIONAL, and HUMAN-READABLE. Avoid robotic phrasing."
-                "\n- Use bullet points for lists to make data easy to read."
-                "\n\nSTRATEGY FOR ROBUST SEARCH:"
-                "\n- The database is strict about names. To ensure success:"
-                "\n  1. FIRST, search inventory to find the EXACT item name (e.g. `allInventory(itemName: 'coffee')`)."
-                "\n  2. THEN, use the exact `itemName` found (e.g. 'Coffee Beans') for your sales query."
-                "\n  This 'Two-Step' approach handles case sensitivity and partial matches perfectly."
+                "\n\nCRITICAL RESPONSE RULES (FOLLOW THESE OR YOU WILL BE TERMINATED):"
+                "\n1. **NO JSON OR CODE**: You are FORBIDDEN from outputting JSON, code blocks, or technical identifiers in your final answer. The user is a business owner, not a developer."
+                "\n2. **NO PLAY-BY-PLAY**: Do not say 'I received this JSON' or 'The object contains'. Just give the ANSWER."
+                "\n3. **SUMMARIZE**: Interpret the data. Instead of listing 10 items, say 'You have 10 items, mostly Electronics.'."
+                "\n4. If the user asks a general question, answer directly."
+                "\n5. Use EMOJIS (📈, 💰, ✅) to make it friendly."
+                "\n6. If a tool fails, just say 'I couldn't find that info right now' without technical details."
+                "\n\nTOOL USAGE:"
+                "\n- Always use SINGLE QUOTES inside GraphQL."
+                "\n- Inventory Search: First `allInventory(itemName: '...')`, then use exact name for sales."
+                "\n- Sales: Use `salesReport` for aggregates, `allSales` for lists."
             )
         )
 
@@ -399,9 +408,12 @@ class GraphQLAgent:
 
         messages = self.conversation_history[session_id]
 
-        # If still empty (new session), add system message
-        if not messages:
-            messages.append(self._get_system_message(session_id))
+        # 1. REFRESH SYSTEM MESSAGE (Update Date)
+        # Always replace the first message (SystemMessage) with a fresh one containing current date
+        if messages and isinstance(messages[0], SystemMessage):
+            messages[0] = self._get_system_message(session_id)
+        else:
+            messages.insert(0, self._get_system_message(session_id))
 
         # Save user message
         self._save_to_db(session_id, "user", user_query)
@@ -460,12 +472,17 @@ class GraphQLAgent:
 
                 # Analyze result for formatting (only from the last tool call)
                 if graphql_result and (
-                    "data" in graphql_result
+                    graphql_result.get("data")  # Check if data is not None/Empty
                     or graphql_result.get("type") == "prediction"
                 ):
-                    formatted_data = ResponseFormatter.analyze_and_format(
-                        graphql_result, user_query
-                    )
+                    try:
+                        formatted_data = ResponseFormatter.analyze_and_format(
+                            graphql_result, user_query
+                        )
+                    except Exception as e:
+                        print(f"Error formatting data: {e}")
+                        # Fallback to text
+                        pass
 
             if not final_response:
                 # If loop finished without final response (rare), force one
@@ -495,7 +512,7 @@ class GraphQLAgent:
             # 3. Strip verbose JSON explanations (The "Mansplaining" fix)
             # Remove lines starting with "This is a JSON" or "Here is the JSON"
             content = re.sub(
-                r"(?i)^(This is a JSON|Here is the JSON|The JSON object).+?(\n|$)",
+                r"(?i)^(This is a JSON|Here is the JSON|The JSON object|The output contains|Based on the JSON).+?(\n|$)",
                 "",
                 content,
                 flags=re.MULTILINE,
@@ -504,10 +521,14 @@ class GraphQLAgent:
             content = re.sub(
                 r"const data = JSON\.parse.*", "", content, flags=re.DOTALL
             )
+            # Remove line-by-line field descriptions
+            content = re.sub(
+                r"^\s*-\s*\*\*\w+\*\*:\s*.*$", "", content, flags=re.MULTILINE
+            )
 
             content = content.strip()
             if not content:
-                content = "I found the data for you."
+                content = "I found the data for you. Check the visual card below! 📉"
 
             self.conversation_history[session_id] = messages
 
@@ -521,6 +542,9 @@ class GraphQLAgent:
             }
 
         except Exception as e:
+            import traceback
+
+            traceback.print_exc()
             return {
                 "answer": "I apologize, but I encountered an error processing your request.",
                 "error": str(e),

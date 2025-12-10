@@ -53,8 +53,22 @@ def chat():
     if not user_query:
         return jsonify({"error": "Missing 'query' field"}), 400
 
-    result = agent.ask(user_query, session_id=session_id)
-    return jsonify(result), 200
+    # Context management for token
+    token = request.headers.get("Authorization")
+    token_reset_token = None
+    if token:
+        from agent import request_token
+
+        token_reset_token = request_token.set(token)
+
+    try:
+        result = agent.ask(user_query, session_id=session_id)
+        return jsonify(result), 200
+    finally:
+        if token_reset_token:
+            from agent import request_token
+
+            request_token.reset(token_reset_token)
 
 
 @app.route("/history", methods=["GET"])

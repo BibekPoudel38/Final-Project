@@ -8,6 +8,7 @@ from .views import (
     InventoryCreateView,
     InventoryDetailView,
     InventoryItemAnalyticsView,
+    InventoryUpdateView,
 )
 
 urlpatterns = [
@@ -22,6 +23,7 @@ urlpatterns = [
     path("export/", InventoryExportView.as_view(), name="inventory-export"),
     path("import/", InventoryImportView.as_view(), name="inventory-import"),
     path("<int:pk>/", InventoryDetailView.as_view(), name="inventory-detail"),
+    path("<int:pk>/update/", InventoryUpdateView.as_view(), name="inventory-update"),
     path(
         "<int:pk>/analytics/",
         InventoryItemAnalyticsView.as_view(),

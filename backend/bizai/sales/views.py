@@ -27,8 +27,12 @@ class SalesListView(APIView):
         weather = request.GET.get("weather", "")
 
         # Base queryset
+        # Base queryset
+        if not request.user.is_authenticated:
+            return Response({"error": "Unauthorized"}, status=401)
+
         queryset = (
-            SalesModel.objects.filter(is_active=True)
+            SalesModel.objects.filter(is_active=True, prod_id__user=request.user)
             .select_related("prod_id")
             .prefetch_related("holidays")
         )
@@ -92,14 +96,20 @@ class SalesInsightsView(APIView):
     """
 
     def get(self, request):
-        # Total Revenue
-        total_revenue = (
-            SalesModel.objects.aggregate(Sum("revenue"))["revenue__sum"] or 0
+        if not request.user.is_authenticated:
+            return Response({"error": "Unauthorized"}, status=401)
+
+        # Base filter for this user
+        user_sales = SalesModel.objects.filter(
+            prod_id__user=request.user, is_active=True
         )
+
+        # Total Revenue
+        total_revenue = user_sales.aggregate(Sum("revenue"))["revenue__sum"] or 0
 
         # Top Product
         top_product_data = (
-            SalesModel.objects.values("prod_id__item_name")
+            user_sales.values("prod_id__item_name")
             .annotate(total_sold=Sum("quantity_sold"))
             .order_by("-total_sold")
             .first()
@@ -108,11 +118,31 @@ class SalesInsightsView(APIView):
             top_product_data["prod_id__item_name"] if top_product_data else "N/A"
         )
 
-        # Sales Trend (Last 7 days with sales)
-        trend_query = (
-            SalesModel.objects.values("sale_date")
+        # Sales Trend (Daily revenue for entire dataset - or last 30 days?)
+        # User wants "entire dataset", but strictly linear chart of 365 days is messy.
+        # Let's return last 30 days for trend, or aggregated by month if > 90 days?
+        # For now, let's stick to the user's request "metrics should consider entire dataset".
+        # Total Revenue and Top Product are already entire dataset.
+        # Trend Chart usually implies "recent" or "over time". All time daily might be too big.
+        # Let's keep trend as is (Last 7 days) or maybe extend to 14/30?
+        # Actually, let's just make sure "Weather Impact" is entire dataset.
+
+        # Weather Impact
+        weather_impact_query = (
+            user_sales.values("weather_condition")
             .annotate(revenue=Sum("revenue"))
-            .order_by("-sale_date")[:7]
+            .order_by("-revenue")
+        )
+        weather_impact = [
+            {"name": item["weather_condition"] or "Unknown", "revenue": item["revenue"]}
+            for item in weather_impact_query
+        ]
+
+        # Sales Trend (Let's increase to 30 days for better context)
+        trend_query = (
+            user_sales.values("sale_date")
+            .annotate(revenue=Sum("revenue"))
+            .order_by("-sale_date")[:30]
         )
         trend_data = [
             {"name": item["sale_date"].strftime("%m/%d"), "revenue": item["revenue"]}
@@ -124,6 +154,7 @@ class SalesInsightsView(APIView):
                 "total_revenue": total_revenue,
                 "top_product": top_product,
                 "sales_trend": trend_data,
+                "weather_impact": weather_impact,
             }
         )
 
@@ -136,8 +167,12 @@ class TrainModelView(APIView):
     def post(self, request):
         try:
             # Fetch all active sales
+            # Fetch all active sales for this user
+            if not request.user.is_authenticated:
+                return Response({"error": "Unauthorized"}, status=401)
+
             sales = (
-                SalesModel.objects.filter(is_active=True)
+                SalesModel.objects.filter(is_active=True, prod_id__user=request.user)
                 .select_related("prod_id")
                 .prefetch_related("holidays")
             )
@@ -178,7 +213,12 @@ class TrainModelView(APIView):
                 )
 
             # Send to Prediction Model
-            payload = {"business_id": "biz_001", "data": training_data}  # Default
+            # Secure: Use User ID as business_id
+            if not request.user.is_authenticated:
+                return Response({"error": "Unauthorized"}, status=401)
+
+            business_id = str(request.user.id)
+            payload = {"business_id": business_id, "data": training_data}
 
             # Prediction Service URL
             urls_to_try = [
@@ -214,7 +254,9 @@ class TrainModelView(APIView):
                     from sales.models import TrainingMetrics
 
                     metrics = data["metrics"]
+                    metrics = data["metrics"]
                     TrainingMetrics.objects.create(
+                        user=request.user,
                         accuracy=metrics.get("accuracy", 0.0),
                         loss=metrics.get("loss", 0.0),
                         mae=metrics.get("mae"),
@@ -256,7 +298,14 @@ class TrainingMetricsView(APIView):
     def get(self, request):
         from sales.models import TrainingMetrics
 
-        latest = TrainingMetrics.objects.order_by("-created_at").first()
+        if not request.user.is_authenticated:
+            return Response({"error": "Unauthorized"}, status=401)
+
+        latest = (
+            TrainingMetrics.objects.filter(user=request.user)
+            .order_by("-created_at")
+            .first()
+        )
         if latest:
             return Response(
                 {
@@ -301,8 +350,12 @@ class ScenarioPredictionView(APIView):
             payload = request.data
 
             # Ensure business_id is present
-            if "business_id" not in payload:
-                payload["business_id"] = "biz_001"
+            # Ensure business_id is present and secure
+            if not request.user.is_authenticated:
+                return Response({"error": "Unauthorized"}, status=401)
+
+            # FORCE override business_id with the user's ID
+            payload["business_id"] = str(request.user.id)
 
             # Prediction Service URL
             urls_to_try = [
@@ -355,15 +408,20 @@ class SalesAIChatView(APIView):
 
         try:
             # 1. Gather Context
-            # Global Stats
-            total_revenue = (
-                SalesModel.objects.aggregate(Sum("revenue"))["revenue__sum"] or 0
+            if not request.user.is_authenticated:
+                return Response({"error": "Unauthorized"}, status=401)
+
+            user_sales = SalesModel.objects.filter(
+                prod_id__user=request.user, is_active=True
             )
-            total_sales_count = SalesModel.objects.count()
+
+            # Global Stats
+            total_revenue = user_sales.aggregate(Sum("revenue"))["revenue__sum"] or 0
+            total_sales_count = user_sales.count()
 
             # Top Product
             top_product_data = (
-                SalesModel.objects.values("prod_id__item_name")
+                user_sales.values("prod_id__item_name")
                 .annotate(total_sold=Sum("quantity_sold"))
                 .order_by("-total_sold")
                 .first()
@@ -373,11 +431,9 @@ class SalesAIChatView(APIView):
             )
 
             # Recent Transactions (Last 5)
-            recent_sales = (
-                SalesModel.objects.filter(is_active=True)
-                .select_related("prod_id")
-                .order_by("-sale_date")[:5]
-            )
+            recent_sales = user_sales.select_related("prod_id").order_by("-sale_date")[
+                :5
+            ]
             recent_sales_list = []
             for s in recent_sales:
                 recent_sales_list.append(
@@ -441,3 +497,198 @@ class SalesAIChatView(APIView):
             return Response(
                 {"message": f"Error processing AI request: {str(e)}"}, status=500
             )
+
+
+class SalesImportView(APIView):
+    """
+    Import Sales Data from CSV.
+    Optimized for performance using bulk_create.
+    """
+
+    def post(self, request):
+        import csv
+        import io
+        import uuid
+        from inventory.models import InventorModel
+        from sales.models import SalesModel
+
+        if not request.user.is_authenticated:
+            return Response({"error": "Unauthorized"}, status=401)
+
+        if "file" not in request.FILES:
+            return Response({"error": "No file provided"}, status=400)
+
+        file = request.FILES["file"]
+        if not file.name.endswith(".csv"):
+            return Response({"error": "File must be a CSV"}, status=400)
+
+        try:
+            decoded_file = file.read().decode("utf-8")
+            io_string = io.StringIO(decoded_file)
+            reader = csv.DictReader(io_string)
+            rows = list(reader)
+
+            if not rows:
+                return Response({"error": "Empty CSV file"}, status=400)
+
+            # 1. Collect all sales_uids to check duplicates in one query
+            # Generate UIDs for rows that don't have them
+            row_data = []
+            uids_to_check = []
+
+            # Pre-process rows
+            for row in rows:
+                sales_uid = (
+                    row.get("sales_uid") or row.get("uid") or row.get("Transaction ID")
+                )
+                if not sales_uid:
+                    sales_uid = f"auto_{uuid.uuid4().hex[:12]}"
+
+                row["clean_uid"] = sales_uid
+                uids_to_check.append(sales_uid)
+                row_data.append(row)
+
+            # Fetch existing UIDs
+            existing_uids = set(
+                SalesModel.objects.filter(sales_uid__in=uids_to_check).values_list(
+                    "sales_uid", flat=True
+                )
+            )
+
+            # Filter out duplicates
+            new_rows = [r for r in row_data if r["clean_uid"] not in existing_uids]
+
+            if not new_rows:
+                return Response(
+                    {
+                        "status": "success",
+                        "created": 0,
+                        "skipped": len(rows),
+                        "message": "All records were duplicates.",
+                    }
+                )
+
+            # 2. Handle Inventory (Products)
+            # Collect all product names
+            product_names = set()
+            for row in new_rows:
+                p_name = row.get("product_id") or row.get("Product Name")
+                if p_name:
+                    product_names.add(p_name)
+
+            # Fetch existing inventory for this user
+            existing_inventory = InventorModel.objects.filter(
+                user=request.user, item_name__in=product_names
+            )
+            inventory_map = {item.item_name: item for item in existing_inventory}
+
+            # Identify missing products
+            missing_products = product_names - set(inventory_map.keys())
+
+            # Create missing products in bulk?
+            # InventorModel might have other required fields, but we set defaults.
+            # bulk_create doesn't return IDs in some DBs/Django versions cleanly for mapping,
+            # so we'll loop create for missing ones (usually few types) or assume they are few.
+            # Since product types are usually < 100, loop create is fast enough.
+
+            # Fetch User's Business (Required for Inventory)
+            from merchant.models import BusinessProfileModel
+
+            user_business = BusinessProfileModel.objects.filter(
+                owner=request.user
+            ).first()
+            if not user_business and missing_products:
+                return Response(
+                    {"error": "No Business Profile found. Please complete onboarding."},
+                    status=400,
+                )
+
+            for prod_name in missing_products:
+                # Find a sample row to get price?
+                sample_row = next(
+                    (
+                        r
+                        for r in new_rows
+                        if (
+                            r.get("product_id") == prod_name
+                            or r.get("Product Name") == prod_name
+                        )
+                    ),
+                    {},
+                )
+                rev = float(sample_row.get("revenue") or sample_row.get("Amount") or 0)
+                units = float(
+                    sample_row.get("units_sold") or sample_row.get("Units") or 1
+                )
+                est_price = rev / units if units else 0
+
+                item = InventorModel.objects.create(
+                    user=request.user,
+                    business=user_business,
+                    item_name=prod_name,
+                    item_description="Auto-created from Sales Import",
+                    quantity=0,
+                    quantity_unit="units",
+                    selling_price=est_price,
+                    cost_price=0,
+                    type="Imported",
+                    min_quantity=0,
+                    is_active=True,
+                )
+                inventory_map[prod_name] = item
+
+            # 3. Create Sale Objects
+            sales_to_create = []
+            errors = []
+
+            for row in new_rows:
+                try:
+                    product_name = row.get("product_id") or row.get("Product Name")
+                    date_val = row.get("date") or row.get("Date")
+                    revenue = float(row.get("revenue") or row.get("Amount") or 0)
+                    units = float(row.get("units_sold") or row.get("Units") or 0)
+
+                    if not all([product_name, date_val]):
+                        continue
+
+                    inv_item = inventory_map.get(product_name)
+                    if not inv_item:
+                        continue  # Should not happen
+
+                    sales_to_create.append(
+                        SalesModel(
+                            sales_uid=row["clean_uid"],
+                            prod_id=inv_item,
+                            sale_date=date_val,
+                            quantity_sold=units,
+                            revenue=revenue,
+                            customer_flow=int(float(row.get("customer_flow", 0))),
+                            weather_temperature=float(
+                                row.get("weather_temp")
+                                or row.get("temperature")
+                                or 25.0
+                            ),
+                            weather_condition=row.get("weather_condition", "Sunny"),
+                            discount_percentage=float(
+                                row.get("discount_percentage", 0)
+                            ),
+                            is_active=True,
+                        )
+                    )
+                except Exception as e:
+                    errors.append(str(e))
+
+            # Bulk Create
+            SalesModel.objects.bulk_create(sales_to_create, batch_size=1000)
+
+            return Response(
+                {
+                    "status": "success",
+                    "created": len(sales_to_create),
+                    "skipped": len(rows) - len(sales_to_create),
+                    "errors": errors[:5],
+                }
+            )
+
+        except Exception as e:
+            return Response({"error": f"Failed to process CSV: {str(e)}"}, status=500)
